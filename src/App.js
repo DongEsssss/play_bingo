@@ -89,6 +89,8 @@ function App() {
   const [localIp, setLocalIp] = useState('Loading...');
   const [hostIpInput, setHostIpInput] = useState('');
   const [socket, setSocket] = useState(null);
+  
+  const processingRef = useRef(false);
 
   const [bingoLines, setBingoLines] = useState(0);
   const [enemyBingoLines, setEnemyBingoLines] = useState(0);
@@ -181,10 +183,15 @@ function App() {
     prevLinesRef.current = myLines;
 
     if (status === '') {
-      checkWinCondition(myLines, theirLines);
+      checkWinCondition(myLines, theirLines, playerRole);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [markedNumbers, board, enemyBoard]);
+
+  useEffect(() => {
+    // Release the click lock whenever the turn changes
+    processingRef.current = false;
+  }, [turn]);
 
   // AI Turn Logic for Single Player
   useEffect(() => {
@@ -193,7 +200,7 @@ function App() {
         const available = enemyBoard.filter(n => !markedNumbers.includes(n));
         if (available.length > 0) {
           const pick = available[Math.floor(Math.random() * available.length)];
-          handleMarkNumber(pick);
+          handleMarkNumber(pick, false); // AI's selection
         }
       }, 1000);
       return () => clearTimeout(timer);
@@ -201,22 +208,30 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [turn, view, status, enemyBoard, markedNumbers]);
 
-  const handleMarkNumber = (number) => {
+  const handleMarkNumber = (number, isUserClick = false) => {
     if (status !== '') return;
     if (markedNumbers.includes(number)) return;
+    if (processingRef.current) return;
 
     if (view === 'single') {
-      if (turn !== playerRole && turn === 1) {
+      if (turn === 1 && !isUserClick) {
+        // AI's turn (triggered programmatically, NOT by user click)
+        processingRef.current = true;
+        setJustMarked(number);
+        if (soundOn) SFX.mark();
         setMarkedNumbers(prev => [...prev, number]);
         setTurn(0);
-      } else if (turn === playerRole) {
+      } else if (turn === playerRole && isUserClick) {
+        // Player's turn (must be a user click)
+        processingRef.current = true;
         setJustMarked(number);
         if (soundOn) SFX.mark();
         setMarkedNumbers(prev => [...prev, number]);
         setTurn(1);
       }
     } else if (view === 'multi' && socket) {
-      if (turn === playerRole) {
+      if (turn === playerRole && isUserClick) {
+        processingRef.current = true;
         setJustMarked(number);
         if (soundOn) SFX.mark();
         socket.emit('mark-number', number);
@@ -339,7 +354,7 @@ function App() {
           isCompletedLine ? 'in-line' : '',
           isFresh ? 'fresh' : '',
         ].join(' ').trim()}
-        onClick={() => isMine && handleMarkNumber(num)}
+        onClick={() => isMine && handleMarkNumber(num, true)}
         style={{ cursor: isMine ? 'pointer' : 'default' }}
         onAnimationEnd={() => { if (isFresh) setJustMarked(null); }}
       >
