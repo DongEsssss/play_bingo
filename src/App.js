@@ -64,21 +64,8 @@ const THEMES = [
   { id: 'cloud', label: '구름 지우기', emoji: '☁️', desc: '바람이 구름을 걷어냅니다' },
 ];
 
-const RECORD_KEY = 'bingo-record-v1';
-function loadRecord() {
-  try {
-    const raw = localStorage.getItem(RECORD_KEY);
-    return raw ? JSON.parse(raw) : { win: 0, lose: 0, draw: 0 };
-  } catch {
-    return { win: 0, lose: 0, draw: 0 };
-  }
-}
-function saveRecord(rec) {
-  try { localStorage.setItem(RECORD_KEY, JSON.stringify(rec)); } catch { /* ignore */ }
-}
-
 function App() {
-  const [view, setView] = useState('menu'); // 'menu', 'single', 'multi'
+  const [view, setView] = useState('menu'); // 'menu', 'single', 'multi', 'settings'
   const [board, setBoard] = useState([]);
   const [enemyBoard, setEnemyBoard] = useState([]);
   const [showOpponentBoard, setShowOpponentBoard] = useState(false);
@@ -97,12 +84,9 @@ function App() {
 
   // ---- 신규 기능 상태 ----
   const [theme, setTheme] = useState(() => localStorage.getItem('bingo-theme') || 'classic');
-  const [soundOn, setSoundOn] = useState(true);
-  const [record, setRecord] = useState(loadRecord);
+  const soundOn = true; // 강제 켜짐 (버튼 제거)
   const [comboMsg, setComboMsg] = useState(null); // 콤보(2줄 이상 동시완성) 알림
   const [justMarked, setJustMarked] = useState(null); // 방금 마킹된 숫자(애니메이션 트리거용)
-  const [peekUsed, setPeekUsed] = useState(false);
-  const [peekActive, setPeekActive] = useState(false);
   const prevLinesRef = useRef(0);
 
   const isElectron = window.electron !== undefined;
@@ -131,37 +115,23 @@ function App() {
     setTurn(0);
     setBingoLines(0);
     setEnemyBingoLines(0);
-    setShowOpponentBoard(false);
-    setPeekUsed(false);
-    setPeekActive(false);
     setComboMsg(null);
     prevLinesRef.current = 0;
 
     return newBoard;
   };
 
-  const finalizeRecord = (result) => {
-    setRecord((prev) => {
-      const next = { ...prev, [result]: (prev[result] || 0) + 1 };
-      saveRecord(next);
-      return next;
-    });
-  };
-
   const checkWinCondition = (myLines, theirLines) => {
     if (myLines >= 5 && theirLines >= 5) {
       setStatus('무승부!');
-      finalizeRecord('draw');
       return;
     }
     if (myLines >= 5) {
       setStatus('You Win!');
       if (soundOn) SFX.win();
-      finalizeRecord('win');
     } else if (theirLines >= 5) {
       setStatus(view === 'single' ? 'AI Wins!' : 'Opponent Wins!');
       if (soundOn) SFX.lose();
-      finalizeRecord('lose');
     }
   };
 
@@ -239,15 +209,7 @@ function App() {
     }
   };
 
-  // 파워업: 게임당 1회, 상대 보드를 3초간 미리보기
-  const usePeek = () => {
-    if (peekUsed || status !== '') return;
-    setPeekUsed(true);
-    setPeekActive(true);
-    setShowOpponentBoard(true);
-    if (soundOn) SFX.click();
-    setTimeout(() => setPeekActive(false), 3000);
-  };
+
 
   const startSinglePlayer = () => {
     initGame(true);
@@ -406,21 +368,10 @@ function App() {
 
       {comboMsg && <div className="combo-toast">{comboMsg}</div>}
 
-      {view === 'menu' && (
+      {view === 'settings' && (
         <div className="classic-panel main-menu">
-          <h1>PLAY BINGO</h1>
-          {isElectron && (
-            <p style={{ textAlign: 'center', marginBottom: '0.75rem', color: 'var(--text-muted)' }}>
-              내 IP: {localIp}
-            </p>
-          )}
-
-          <div className="record-bar">
-            <div className="record-chip win">승 {record.win}</div>
-            <div className="record-chip lose">패 {record.lose}</div>
-            <div className="record-chip draw">무 {record.draw}</div>
-          </div>
-
+          <h2>설정</h2>
+          
           <div className="theme-picker">
             <p className="section-label">테마 선택</p>
             <div className="theme-options">
@@ -437,10 +388,23 @@ function App() {
               ))}
             </div>
           </div>
+          
+          <button className="btn outline" onClick={() => setView('menu')} style={{ marginTop: '2rem' }}>뒤로 가기</button>
+        </div>
+      )}
+
+      {view === 'menu' && (
+        <div className="classic-panel main-menu">
+          <h1>PLAY BINGO</h1>
+          {isElectron && (
+            <p style={{ textAlign: 'center', marginBottom: '0.75rem', color: 'var(--text-muted)' }}>
+              내 IP: {localIp}
+            </p>
+          )}
 
           <button className="btn" onClick={startSinglePlayer}>AI와 대결하기</button>
           <button className="btn accent" onClick={startHost}>멀티플레이 방 열기</button>
-
+          
           <div style={{ marginTop: '1rem' }}>
             <input
               type="text"
@@ -452,9 +416,7 @@ function App() {
             <button className="btn" onClick={startJoin}>멀티플레이 참가하기</button>
           </div>
 
-          <button className="sound-toggle" onClick={() => setSoundOn((s) => !s)}>
-            {soundOn ? '🔊 효과음 켜짐' : '🔇 효과음 꺼짐'}
-          </button>
+          <button className="btn outline" onClick={() => setView('settings')} style={{ marginTop: '1rem' }}>설정 (테마)</button>
 
           {status && <p style={{ color: 'var(--accent)', textAlign: 'center' }}>{status}</p>}
         </div>
@@ -465,18 +427,7 @@ function App() {
           <div className="game-header">
             <h2>{status !== '' ? status : (turn === playerRole ? '당신의 차례' : '상대방의 차례')}</h2>
             <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
-              <button
-                className="btn outline power-btn"
-                disabled={peekUsed || status !== ''}
-                onClick={usePeek}
-                title="게임당 1회, 상대 보드를 3초간 확인합니다"
-              >
-                {peekUsed ? '👁️ 사용 완료' : '👁️ 상대 보드 훔쳐보기'}
-              </button>
-              <button className="btn outline" onClick={() => setShowOpponentBoard(!showOpponentBoard)}>
-                {showOpponentBoard ? '상대 보드 숨기기' : '상대 보드 보기'}
-              </button>
-              <button className="btn accent" onClick={leaveGame}>
+              <button className="btn accent" onClick={leaveGame} style={{ margin: 0, width: '120px' }}>
                 나가기
               </button>
             </div>
@@ -489,27 +440,6 @@ function App() {
                 {board.map((num, idx) => renderCell(num, idx, true, myCompletedCells))}
               </div>
             </div>
-
-            {enemyBoard.length > 0 && (showOpponentBoard || peekActive) && (
-              <div className={`board-container ${peekActive ? 'peeking' : ''}`}>
-                <h3 style={{ color: 'var(--accent)' }}>
-                  {view === 'single' ? 'AI 보드' : '상대 보드'}
-                  <span className="line-count">{enemyBingoLines} / 5 줄</span>
-                </h3>
-                <div className="bingo-board">
-                  {enemyBoard.map((num, idx) => renderCell(num, idx, false, enemyCompletedCells))}
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {status !== '' && view !== 'menu' && (
-        <div className={`result-overlay ${status === 'You Win!' ? 'win' : status === '무승부!' ? 'draw' : 'lose'}`}>
-          <div className="result-card">
-            <h2>{status}</h2>
-            <button className="btn" onClick={leaveGame}>메뉴로 돌아가기</button>
           </div>
         </div>
       )}
