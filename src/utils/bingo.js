@@ -1,11 +1,11 @@
 export const generateBoard = () => {
-  const numbers = Array.from({ length: 25 }, (_, i) => i + 1);
+  const numbers = Array.from({ length: 100 }, (_, i) => i + 1);
   // Fisher-Yates shuffle
   for (let i = numbers.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
     [numbers[i], numbers[j]] = [numbers[j], numbers[i]];
   }
-  return numbers;
+  return numbers.slice(0, 25);
 };
 
 export const checkBingo = (board, markedNumbers) => {
