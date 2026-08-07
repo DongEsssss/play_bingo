@@ -67,11 +67,13 @@ const THEMES = [
 function App() {
   const [view, setView] = useState('menu'); // 'menu', 'single', 'multi', 'settings'
   const [board, setBoard] = useState([]);
-  const [enemyBoard, setEnemyBoard] = useState([]);
+  const [opponents, setOpponents] = useState({}); // { [socketId]: { board, bingoLines } }
   const [showOpponentBoard, setShowOpponentBoard] = useState(false);
   const [markedNumbers, setMarkedNumbers] = useState([]);
-  const [turn, setTurn] = useState(0); // 0: Player 1 / Host, 1: AI / Client
-  const [playerRole, setPlayerRole] = useState(0); // 0: Player 1/Host, 1: Client
+  const [turn, setTurn] = useState(0); // 0, 1, 2, ...
+  const [playerRole, setPlayerRole] = useState(0); // 0: Host, 1..N: Clients
+  const [playerCount, setPlayerCount] = useState(1);
+  const [readyCount, setReadyCount] = useState(0);
   const [status, setStatus] = useState('');
   const [localIp, setLocalIp] = useState('Loading...');
   const [hostIpInput, setHostIpInput] = useState('');
@@ -80,7 +82,6 @@ function App() {
   const processingRef = useRef(false);
 
   const [bingoLines, setBingoLines] = useState(0);
-  const [enemyBingoLines, setEnemyBingoLines] = useState(0);
 
   // ---- 신규 기능 상태 ----
   const [theme, setTheme] = useState(() => localStorage.getItem('bingo-theme') || 'classic');
@@ -106,40 +107,53 @@ function App() {
     setBoard(newBoard);
 
     if (isSinglePlayer) {
-      setEnemyBoard(generateBoard());
+      setOpponents({
+        'ai': { board: generateBoard(), bingoLines: 0 }
+      });
     } else {
-      setEnemyBoard([]);
+      setOpponents({});
     }
 
     setMarkedNumbers([]);
     setTurn(0);
     setBingoLines(0);
-    setEnemyBingoLines(0);
+    setShowOpponentBoard(false);
     setComboMsg(null);
     prevLinesRef.current = 0;
 
     return newBoard;
   };
 
-  const checkWinCondition = (myLines, theirLines) => {
-    if (myLines >= 5 && theirLines >= 5) {
-      setStatus('무승부!');
-      return;
-    }
-    if (myLines >= 5) {
-      setStatus('You Win!');
-      if (soundOn) SFX.win();
-    } else if (theirLines >= 5) {
-      setStatus(view === 'single' ? 'AI Wins!' : 'Opponent Wins!');
-      if (soundOn) SFX.lose();
-    }
+  const checkWinCondition = (myLines, opps) => {
+    // 승/패/무승부 조건 제거 (사용자 요청)
+    // 게임이 끝나도 계속 진행할 수 있도록 아무것도 하지 않음
   };
 
   useEffect(() => {
     const myLines = checkBingo(board, markedNumbers);
-    const theirLines = checkBingo(enemyBoard, markedNumbers);
     setBingoLines(myLines);
-    setEnemyBingoLines(theirLines);
+
+    let updatedOpps = { ...opponents };
+    for (const id in updatedOpps) {
+      updatedOpps[id].bingoLines = checkBingo(updatedOpps[id].board, markedNumbers);
+    }
+    
+    // Only update if it actually changed, to avoid infinite loops, but since it's just checkBingo it's fast
+    // Let's just mutate and trigger effect? Actually, we must setState.
+    // Wait, setting state in useEffect depending on same state can loop.
+    // We'll setOpponents safely.
+    setOpponents(prev => {
+      let changed = false;
+      const next = { ...prev };
+      for (const id in next) {
+        const lines = checkBingo(next[id].board, markedNumbers);
+        if (next[id].bingoLines !== lines) {
+          next[id] = { ...next[id], bingoLines: lines };
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
 
     // 콤보 감지: 한 번의 마킹으로 두 줄 이상 새로 완성되면 콤보 알림
     const delta = myLines - prevLinesRef.current;
@@ -153,10 +167,10 @@ function App() {
     prevLinesRef.current = myLines;
 
     if (status === '') {
-      checkWinCondition(myLines, theirLines, playerRole);
+      checkWinCondition(myLines, opponents);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [markedNumbers, board, enemyBoard]);
+  }, [markedNumbers, board]);
 
   useEffect(() => {
     // Release the click lock whenever the turn changes
@@ -167,7 +181,9 @@ function App() {
   useEffect(() => {
     if (view === 'single' && turn === 1 && status === '') {
       const timer = setTimeout(() => {
-        const available = enemyBoard.filter(n => !markedNumbers.includes(n));
+        const aiBoard = opponents['ai']?.board;
+        if (!aiBoard) return;
+        const available = aiBoard.filter(n => !markedNumbers.includes(n));
         if (available.length > 0) {
           const pick = available[Math.floor(Math.random() * available.length)];
           handleMarkNumber(pick, false); // AI's selection
@@ -176,7 +192,7 @@ function App() {
       return () => clearTimeout(timer);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [turn, view, status, enemyBoard, markedNumbers]);
+  }, [turn, view, status, opponents, markedNumbers]);
 
   const handleMarkNumber = (number, isUserClick = false) => {
     if (status !== '') return;
@@ -246,14 +262,15 @@ function App() {
     });
 
     newSocket.on('init', (data) => {
-      setPlayerRole(data.role === 'host' ? 0 : 1);
+      setPlayerRole(data.role); // 0 (host) or 1..N
       setView('multi');
       initGame(false);
       setStatus('Waiting for other player...');
     });
 
-    newSocket.on('player-joined', () => {
-      newSocket.emit('ready', board);
+    newSocket.on('lobby-update', (data) => {
+      setPlayerCount(data.playerCount);
+      setReadyCount(data.readyPlayers || 0);
     });
 
     newSocket.emit('ready', board);
@@ -261,10 +278,14 @@ function App() {
     newSocket.on('game-start', (data) => {
       setTurn(data.turn);
       setStatus('');
-      const opponentId = Object.keys(data.boards).find(id => id !== newSocket.id);
-      if (opponentId && data.boards[opponentId]) {
-        setEnemyBoard(data.boards[opponentId]);
-      }
+      
+      const newOpps = {};
+      Object.keys(data.boards).forEach(id => {
+        if (id !== newSocket.id) {
+          newOpps[id] = { board: data.boards[id], bingoLines: 0 };
+        }
+      });
+      setOpponents(newOpps);
     });
 
     newSocket.on('number-marked', (data) => {
@@ -301,9 +322,14 @@ function App() {
   };
 
   const myCompletedCells = getCompletedCellIndices(board, markedNumbers);
-  const enemyCompletedCells = getCompletedCellIndices(enemyBoard, markedNumbers);
 
-  const renderCell = (num, idx, isMine, completedSet) => {
+  const getOpponentStatusStr = () => {
+    if (view === 'single') return turn === 1 ? 'AI의 차례' : '상대방 차례대기';
+    if (turn === playerRole) return '당신의 차례';
+    return `플레이어 ${turn + 1}의 차례`;
+  };
+
+  const renderCell = (num, idx, isMine, completedSet, isEnemy = false) => {
     const marked = markedNumbers.includes(num);
     const isCompletedLine = completedSet.has(idx);
     const isFresh = isMine && justMarked === num;
@@ -320,7 +346,7 @@ function App() {
         style={{ cursor: isMine ? 'pointer' : 'default' }}
         onAnimationEnd={() => { if (isFresh) setJustMarked(null); }}
       >
-        <span className="cell-number">{num}</span>
+        <span className="cell-number">{isEnemy ? '' : num}</span>
         {theme === 'glass' && <span className="glass-overlay" aria-hidden="true" />}
         {theme === 'cloud' && (
           <span className="cloud-overlay" aria-hidden="true">
@@ -422,11 +448,29 @@ function App() {
         </div>
       )}
 
-      {(view === 'single' || view === 'multi') && (
+      {(view === 'single' || view === 'multi') && status === 'Waiting for other player...' && (
+        <div className="classic-panel main-menu">
+          <h2>대기실</h2>
+          <p style={{ textAlign: 'center', marginBottom: '1rem', color: 'var(--text-muted)' }}>
+            현재 {playerCount}명 접속 중 (준비: {readyCount}명)
+          </p>
+          {playerRole === 0 ? (
+            <button className="btn accent" onClick={() => socket?.emit('start-game-manual')}>게임 시작</button>
+          ) : (
+            <p style={{ textAlign: 'center' }}>방장이 게임을 시작할 때까지 기다려주세요...</p>
+          )}
+          <button className="btn outline" onClick={leaveGame} style={{ marginTop: '1rem' }}>나가기</button>
+        </div>
+      )}
+
+      {(view === 'single' || view === 'multi') && status !== 'Waiting for other player...' && (
         <div className="classic-panel game-panel">
           <div className="game-header">
-            <h2>{status !== '' ? status : (turn === playerRole ? '당신의 차례' : '상대방의 차례')}</h2>
+            <h2>{status !== '' ? status : (turn === playerRole ? '당신의 차례' : getOpponentStatusStr())}</h2>
             <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
+              <button className="btn outline" onClick={() => setShowOpponentBoard(!showOpponentBoard)}>
+                {showOpponentBoard ? '상대 보드 숨기기' : '상대 보드 보기'}
+              </button>
               <button className="btn accent" onClick={leaveGame} style={{ margin: 0, width: '120px' }}>
                 나가기
               </button>
@@ -437,9 +481,36 @@ function App() {
             <div className="board-container">
               <h3>내 보드 <span className="line-count">{bingoLines} / 5 줄</span></h3>
               <div className="bingo-board">
-                {board.map((num, idx) => renderCell(num, idx, true, myCompletedCells))}
+                {board.map((num, idx) => renderCell(num, idx, true, myCompletedCells, false))}
               </div>
             </div>
+          </div>
+        </div>
+      )}
+
+      {Object.keys(opponents).length > 0 && showOpponentBoard && (
+        <div className="opponent-popup-overlay" onClick={() => setShowOpponentBoard(false)}>
+          <div className="opponent-popup-card" onClick={(e) => e.stopPropagation()}>
+            <div className="opponent-boards-wrapper">
+              {Object.keys(opponents).map((id, index) => {
+                const opp = opponents[id];
+                const oppCompletedCells = getCompletedCellIndices(opp.board, markedNumbers);
+                return (
+                  <div key={id} style={{ marginBottom: '2rem' }}>
+                    <h3>
+                      {view === 'single' ? 'AI 보드' : `플레이어 ${index + 1} (상대)`}
+                      <span className="line-count">{opp.bingoLines} / 5 줄</span>
+                    </h3>
+                    <div className="bingo-board">
+                      {opp.board.map((num, idx) => renderCell(num, idx, false, oppCompletedCells, true))}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            <button className="btn outline opponent-popup-close" onClick={() => setShowOpponentBoard(false)}>
+              닫기
+            </button>
           </div>
         </div>
       )}

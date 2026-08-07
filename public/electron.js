@@ -1,6 +1,6 @@
 const { app, BrowserWindow, ipcMain } = require('electron');
 const path = require('path');
-const isDev = process.env.NODE_ENV !== 'production';
+const isDev = !app.isPackaged;
 const http = require('http');
 const { Server } = require('socket.io');
 const os = require('os');
@@ -95,15 +95,9 @@ ipcMain.handle('start-server', (event, port = 4000) => {
 
     io.on('connection', (socket) => {
       console.log('A user connected:', socket.id);
-      
-      if (gameState.players.length >= 2) {
-        socket.emit('error', 'Room is full');
-        socket.disconnect();
-        return;
-      }
 
       const isHost = gameState.players.length === 0;
-      const playerRole = isHost ? 'host' : 'client';
+      const playerRole = isHost ? 0 : gameState.players.length; // use numeric roles
       
       gameState.players.push({
         id: socket.id,
@@ -113,18 +107,23 @@ ipcMain.handle('start-server', (event, port = 4000) => {
       socket.emit('init', { role: playerRole, gameState });
       
       // Notify others
-      socket.broadcast.emit('player-joined', { role: playerRole });
+      io.emit('lobby-update', { playerCount: gameState.players.length });
 
-      // When both are connected, they can send 'ready' with their board
       socket.on('ready', (board) => {
         if (board) {
           gameState.boards[socket.id] = board;
         }
         gameState.readyPlayers += 1;
-        if (gameState.readyPlayers >= 2) {
+        io.emit('lobby-update', { playerCount: gameState.players.length, readyPlayers: gameState.readyPlayers });
+      });
+
+      socket.on('start-game-manual', () => {
+        // Only host can start
+        if (gameState.players[0] && gameState.players[0].id === socket.id) {
           io.emit('game-start', { 
             turn: gameState.turn,
-            boards: gameState.boards 
+            boards: gameState.boards,
+            players: gameState.players
           });
         }
       });
@@ -138,7 +137,7 @@ ipcMain.handle('start-server', (event, port = 4000) => {
 
         if (!gameState.markedNumbers.includes(number)) {
           gameState.markedNumbers.push(number);
-          gameState.turn = gameState.turn === 0 ? 1 : 0; // Switch turn
+          gameState.turn = (gameState.turn + 1) % gameState.players.length; // Switch turn
           
           io.emit('number-marked', {
             number,
@@ -158,9 +157,15 @@ ipcMain.handle('start-server', (event, port = 4000) => {
       socket.on('disconnect', () => {
         console.log('User disconnected:', socket.id);
         gameState.players = gameState.players.filter(p => p.id !== socket.id);
-        gameState.readyPlayers = 0;
-        gameState.markedNumbers = [];
-        io.emit('player-left');
+        delete gameState.boards[socket.id];
+        // Re-assign roles based on new positions
+        gameState.players.forEach((p, idx) => p.role = idx);
+        
+        // Count ready players
+        gameState.readyPlayers = Object.keys(gameState.boards).length;
+        
+        io.emit('lobby-update', { playerCount: gameState.players.length, readyPlayers: gameState.readyPlayers });
+        io.emit('player-left', { players: gameState.players });
       });
     });
 
